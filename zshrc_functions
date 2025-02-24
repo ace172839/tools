@@ -1,0 +1,231 @@
+### Opens a new tab in the current Terminal window and optionally executes a command.
+### When invoked via a function named 'newwin', opens a new Terminal *window* instead.
+function newtab {
+
+    # If this function was invoked directly by a function named 'newwin', we open a new *window* instead
+    # of a new tab in the existing window.
+    local funcName=$FUNCNAME
+    local targetType='tab'
+    local targetDesc='new tab in the active Terminal window'
+    local makeTab=1
+    case "${FUNCNAME[1]}" in
+        newwin)
+            makeTab=0
+            funcName=${FUNCNAME[1]}
+            targetType='window'
+            targetDesc='new Terminal window'
+            ;;
+    esac
+
+    # Command-line help.
+    if [[ "$1" == '--help' || "$1" == '-h' ]]; then
+        cat <<EOF
+Synopsis:
+    $funcName [-g] [command [param1 ...]]
+
+Description:
+    Opens a $targetDesc and optionally executes a command.
+
+    The new $targetType will run a login shell (i.e., load the user's shell profile) and inherit
+    the working folder from this shell (the active Terminal tab).
+
+    -g (back*g*round) causes Terminal not to activate, but within Terminal, the new tab/window
+      will become the active element.
+
+    NOTE: With -g, for technical reasons, Terminal will still activate *briefly* when
+    you create a new tab (creating a new window is not affected).
+
+    When a command is specified, its first token will become the new ${targetType}'s title.
+    Quoted parameters are handled properly.
+
+    To specify multiple commands, use 'eval' followed by a single, *double*-quoted string
+    in which the commands are separated by ';' Do NOT use backslash-escaped double quotes inside
+    this string; rather, use backslash-escaping as needed.
+    Use 'exit' as the last command to automatically close the tab when the command
+    terminates; precede it with 'read -s -n 1' to wait for a keystroke first.
+
+    Alternatively, pass a script name or path; prefix with 'exec' to automatically
+    close the $targetType when the script terminates.
+
+Examples:
+    $funcName ls -l "\$Home/Library/Application Support"
+    $funcName eval "ls \\\$HOME/Library/Application\ Support; echo Press a key to exit.; read -s -n 1; exit"
+    $funcName /path/to/someScript
+    $funcName exec /path/to/someScript
+EOF
+        return 0
+    fi
+
+    # Option-parameters loop.
+    inBackground=0
+    while (( $# )); do
+        case "$1" in
+            -g)
+                inBackground=1
+                ;;
+            --) # Explicit end-of-options marker.
+                shift   # Move to next param and proceed with data-parameter analysis below.
+                break
+                ;;
+            -*) # An unrecognized switch.
+                echo "$FUNCNAME: PARAMETER ERROR: Unrecognized option: '$1'. To force interpretation as non-option, precede with '--'. Use -h or --h for help." 1>&2 && return 2
+                ;;
+            *)  # 1st argument reached; proceed with argument-parameter analysis below.
+                break
+                ;;
+        esac
+        shift
+    done
+
+    # All remaining parameters, if any, make up the command to execute in the new tab/window.
+
+    local CMD_PREFIX='tell application "Terminal" to do script'
+
+        # Command for opening a new Terminal window (with a single, new tab).
+    local CMD_NEWWIN=$CMD_PREFIX    # Curiously, simply executing 'do script' with no further arguments opens a new *window*.
+        # Commands for opening a new tab in the current Terminal window.
+        # Sadly, there is no direct way to open a new tab in an existing window, so we must activate Terminal first, then send a keyboard shortcut.
+    local CMD_ACTIVATE='tell application "Terminal" to activate'
+    local CMD_NEWTAB='tell application "System Events" to keystroke "t" using {command down}'
+        # For use with -g: commands for saving and restoring the previous application
+    local CMD_SAVE_ACTIVE_APPNAME='tell application "System Events" to set prevAppName to displayed name of first process whose frontmost is true'
+    local CMD_REACTIVATE_PREV_APP='activate application prevAppName'
+        # For use with -G: commands for saving and restoring the previous state within Terminal
+    local CMD_SAVE_ACTIVE_WIN='tell application "Terminal" to set prevWin to front window'
+    local CMD_REACTIVATE_PREV_WIN='set frontmost of prevWin to true'
+    local CMD_SAVE_ACTIVE_TAB='tell application "Terminal" to set prevTab to (selected tab of front window)'
+    local CMD_REACTIVATE_PREV_TAB='tell application "Terminal" to set selected of prevTab to true'
+    local CMD_SETTITLE
+    local quotedArgs
+    local cmd
+    local cmdArgsArray=()
+    local setTitleArgsArray=()
+
+    if (( $# )); then # Command specified; open a new tab or window, then execute command.
+            # Use the command's first token as the tab title.
+        local tabTitle=$1
+        case "$tabTitle" in
+            exec|eval) # Use following token instead, if the 1st one is 'eval' or 'exec'.
+                tabTitle=$(echo "$2" | awk '{ print $1 }') 
+                ;;
+            cd) # Use last path component of following token instead, if the 1st one is 'cd'
+                tabTitle=$(basename "$2")
+                ;;
+        esac
+        CMD_SETTITLE="tell application \"Terminal\" to set custom title of front window to \"$tabTitle\""
+        setTitleArgsArray=('-e' "$CMD_SETTITLE")
+    fi
+    # Formulate an escaped form of the command to execute in the new tab.
+    # Note: A command is *implicitly* used in *script* use, namely a `cd` command
+    #       to ensure that the new tab inherits the script's working dir. reliably.
+        # The tricky part is to quote the command tokens properly when passing them to AppleScript:
+        # Step 1: Quote all parameters (as needed) using printf '%q' - this will perform backslash-escaping.
+    # Start with a `cd` command in *script* (non-interactive) use.
+    [[ -z $PS1 ]] && quotedArgs="cd -- $(printf '%q' "$PWD")"
+    [[ -n $quotedArgs && $# -gt 0 ]] && quotedArgs+=' && '
+    # Append the user-specific command, if any.
+    (( $# )) && quotedArgs+=$(printf '%q ' "$@")
+        # Step 2: Escape all backslashes again (by doubling them), because AppleScript expects that.
+    cmd="$CMD_PREFIX \"${quotedArgs//\\/\\\\}\""
+    # cmd="$CMD_PREFIX \"${quotedArgs}\""
+        # Open new tab or window, execute command, and assign tab title.
+        # '>/dev/null' suppresses AppleScript's output when it creates a new tab.
+    if (( makeTab )); then
+        [[ -n $quotedArgs ]] && cmdArgsArray=('-e' "$cmd in front window")
+        if (( inBackground )); then
+            osascript -e "$CMD_SAVE_ACTIVE_APPNAME" -e "$CMD_ACTIVATE" -e "$CMD_NEWTAB" "${cmdArgsArray[@]}" "${setTitleArgsArray[@]}" -e "$CMD_REACTIVATE_PREV_APP" >/dev/null
+        else
+            osascript -e "$CMD_ACTIVATE" -e "$CMD_NEWTAB" "${cmdArgsArray[@]}" "${setTitleArgsArray[@]}" >/dev/null
+        fi
+    else # make *window*
+
+        # Note: $CMD_NEWWIN by itself implicitly creates a new window.
+        [[ -n $quotedArgs ]] && cmdArgsArray=('-e' "$cmd") || cmdArgsArray=('-e' "$CMD_NEWWIN")
+        if (( inBackground )); then
+            osascript "${cmdArgsArray[@]}" "${setTitleArgsArray[@]}" >/dev/null
+        else
+                # Note: Even though we do not strictly need to activate Terminal first, we do it, as assigning the custom title to the 'front window' would otherwise sometimes target the wrong window.
+            osascript -e "$CMD_ACTIVATE" "${cmdArgsArray[@]}" "${setTitleArgsArray[@]}" >/dev/null
+        fi
+    fi        
+
+}
+
+### Opens a new Terminal window and optionally executes a command.
+function newwin {
+    newtab "$@" # Simply pass through to 'newtab', which will examine the call stack to see how it was invoked.
+}
+
+
+function getAWSInstance {
+    local pubIP
+    local priIp
+    local vm=${3::-1}
+    local vmNo=${3[-1]}
+    local basStr
+    if [[ $2 == "TC" ]]; then
+        basStr="Bastion"
+    else
+        basStr="bastion"
+    fi
+    
+    pubIp=$(aws ec2 describe-instances --filters "Name=tag:chain, Values=$1" "Name=tag:Name,Values=*$2*${basStr}*" --query 'Reservations[*].Instances[*].PublicIpAddress' --output text)
+    priIp=$(aws ec2 describe-instances --filters "Name=tag:chain, Values=$1" "Name=tag:Name,Values=*$2*${vm}*${vmNo}*" --query 'Reservations[*].Instances[*].PrivateIpAddress' --output text)
+
+    echo ${pubIp} ${priIp}
+}
+
+
+function getFrontendIP {
+    echo $(aws ec2 describe-instances --filters "Name=tag:chain, Values=$1" "Name=tag:Name,Values=*$2*frontend 0*" --query 'Reservations[*].Instances[*].PublicIpAddress' --output text)
+}
+
+
+
+function getBastionIP {
+    if [[ $2 == "TC" ]]; then
+        echo $(aws ec2 describe-instances --filters "Name=tag:chain, Values=$1" "Name=tag:Name,Values=*$2*Bastion*" --query 'Reservations[*].Instances[*].PublicIpAddress' --output text)
+    else    
+        echo $(aws ec2 describe-instances --filters "Name=tag:chain, Values=$1" "Name=tag:Name,Values=*$2*bastion*" --query 'Reservations[*].Instances[*].PublicIpAddress' --output text)
+    fi
+}
+
+
+
+function portforwarding {
+    if [[ ${#} -ge 2 ]]; then
+        ip1=$(getFrontendIP $1 $2)
+        echo "The frontend IP of Issuer is: ${ip1}"
+        newtab ssh -i ~/.ssh/key.pem -L 8888:10.8.8.50:4568 \
+                                     -L 8887:10.8.8.50:4570 \
+                                     -L 8884:10.8.8.50:4574 \
+                                     -L 8882:10.8.8.50:4577 \
+                                     -L 8881:10.8.8.50:4579 ubuntu@$ip1
+    fi
+    if [[ ${#} -ge 3 ]]; then
+        ip2=$(getFrontendIP $1 $3)
+        echo "The frontend IP of Acquirer is: ${ip2}"
+        newtab ssh -i ~/.ssh/key.pem -L 4566:10.8.8.50:4566 \
+                                     -L 4568:10.8.8.50:4568 \
+                                     -L 4570:10.8.8.50:4570 \
+                                     -L 4574:10.8.8.50:4574 \
+                                     -L 4577:10.8.8.50:4577 \
+                                     -L 4578:10.8.10.50:4577 \
+                                     -L 4579:10.8.8.50:4579 \
+                                     -L 4580:10.8.10.50:4579 \
+                                     -L 14574:10.8.8.50:14574 \
+                                     -L 14570:10.8.8.50:14570 \
+                                     -L 14575:10.8.8.50:14575 \
+                                     -L 14571:10.8.8.50:14571 ubuntu@$ip2
+    fi
+    if [[ ${#} -eq 4 ]]; then
+        ip3=$(getFrontendIP $1 $4)
+        tcBastion=$(getBastionIP $1 $4)
+        echo "The frontend IP of TC is: ${ip3}"
+        echo "The bastion IP of TC is: ${tcBastion}"
+        newtab ssh -i ~/.ssh/key.pem -L 4777:10.8.9.100:4777 ubuntu@$ip3
+        newtab ssh -L 9203:localhost:9200 -i ~/.ssh/id_rsa -i ~/.ssh/key.pem -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o "ProxyCommand=ssh -i ~/.ssh/id_rsa -i ~/.ssh/key.pem  -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ubuntu@$tcBastion -W %h:%p" ubuntu@10.8.14.20
+    fi
+}
+
+
