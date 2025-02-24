@@ -1,5 +1,9 @@
 ### Opens a new tab in the current Terminal window and optionally executes a command.
-### When invoked via a function named 'newwin', opens a new Terminal *window* instead.
+#   When invoked via a function named 'newwin', opens a new Terminal *window* instead.
+#
+#   "newtab" and "newwin" functions are from Github:
+#       https://stackoverflow.com/a/12147804/25594469
+#
 function newtab {
 
     # If this function was invoked directly by a function named 'newwin', we open a new *window* instead
@@ -150,13 +154,13 @@ EOF
     fi        
 
 }
-
 ### Opens a new Terminal window and optionally executes a command.
 function newwin {
     newtab "$@" # Simply pass through to 'newtab', which will examine the call stack to see how it was invoked.
 }
 
 
+### To get publicIP and privateIP of instances on AWS ###
 function getAWSInstance {
     local pubIP
     local priIp
@@ -176,12 +180,13 @@ function getAWSInstance {
 }
 
 
+### To get the IP of Frontend instance of specific chain/node ###
 function getFrontendIP {
     echo $(aws ec2 describe-instances --filters "Name=tag:chain, Values=$1" "Name=tag:Name,Values=*$2*frontend 0*" --query 'Reservations[*].Instances[*].PublicIpAddress' --output text)
 }
 
 
-
+### To get the IP of Bastion instance of specific chain/node ###
 function getBastionIP {
     if [[ $2 == "TC" ]]; then
         echo $(aws ec2 describe-instances --filters "Name=tag:chain, Values=$1" "Name=tag:Name,Values=*$2*Bastion*" --query 'Reservations[*].Instances[*].PublicIpAddress' --output text)
@@ -191,32 +196,18 @@ function getBastionIP {
 }
 
 
-
+### Automatically get Frontend IP and then execute portforwarding to specific chain/node ###
 function portforwarding {
     if [[ ${#} -ge 2 ]]; then
         ip1=$(getFrontendIP $1 $2)
         echo "The frontend IP of Issuer is: ${ip1}"
-        newtab ssh -i ~/.ssh/key.pem -L 8888:10.8.8.50:4568 \
-                                     -L 8887:10.8.8.50:4570 \
-                                     -L 8884:10.8.8.50:4574 \
-                                     -L 8882:10.8.8.50:4577 \
-                                     -L 8881:10.8.8.50:4579 ubuntu@$ip1
+        newtab ssh -i ~/.ssh/key.pem -L XXXX:10.8.8.50:XXXX ubuntu@$ip1
     fi
     if [[ ${#} -ge 3 ]]; then
         ip2=$(getFrontendIP $1 $3)
         echo "The frontend IP of Acquirer is: ${ip2}"
-        newtab ssh -i ~/.ssh/key.pem -L 4566:10.8.8.50:4566 \
-                                     -L 4568:10.8.8.50:4568 \
-                                     -L 4570:10.8.8.50:4570 \
-                                     -L 4574:10.8.8.50:4574 \
-                                     -L 4577:10.8.8.50:4577 \
-                                     -L 4578:10.8.10.50:4577 \
-                                     -L 4579:10.8.8.50:4579 \
-                                     -L 4580:10.8.10.50:4579 \
-                                     -L 14574:10.8.8.50:14574 \
-                                     -L 14570:10.8.8.50:14570 \
-                                     -L 14575:10.8.8.50:14575 \
-                                     -L 14571:10.8.8.50:14571 ubuntu@$ip2
+        newtab ssh -i ~/.ssh/key.pem -L XXXX:10.8.8.50:XXXX \
+                                     -L OOOO:10.8.8.50:OOOO ubuntu@$ip2
     fi
     if [[ ${#} -eq 4 ]]; then
         ip3=$(getFrontendIP $1 $4)
