@@ -1,9 +1,5 @@
 ### Opens a new tab in the current Terminal window and optionally executes a command.
-#   When invoked via a function named 'newwin', opens a new Terminal *window* instead.
-#
-#   "newtab" and "newwin" functions are from Github:
-#       https://stackoverflow.com/a/12147804/25594469
-#
+### When invoked via a function named 'newwin', opens a new Terminal *window* instead.
 function newtab {
 
     # If this function was invoked directly by a function named 'newwin', we open a new *window* instead
@@ -154,15 +150,28 @@ EOF
     fi        
 
 }
+
 ### Opens a new Terminal window and optionally executes a command.
 function newwin {
     newtab "$@" # Simply pass through to 'newtab', which will examine the call stack to see how it was invoked.
 }
 
 
-### To get publicIP and privateIP of instances on AWS ###
 function getAWSInstance {
-    local pubIP
+    EC2REGION="us-east-2"
+    while getopts "r:" arg; do
+        case ${arg} in
+            r)
+                EC2REGION="${OPTARG}"
+                ;;
+            ?)
+                EC2REGION="us-east-2"
+                ;;
+        esac
+    done
+    shift "$(($OPTIND -1))"
+    
+    local pubIp
     local priIp
     local vm=${3::-1}
     local vmNo=${3[-1]}
@@ -173,20 +182,24 @@ function getAWSInstance {
         basStr="bastion"
     fi
     
-    pubIp=$(aws ec2 describe-instances --filters "Name=tag:chain, Values=$1" "Name=tag:Name,Values=*$2*${basStr}*" --query 'Reservations[*].Instances[*].PublicIpAddress' --output text)
-    priIp=$(aws ec2 describe-instances --filters "Name=tag:chain, Values=$1" "Name=tag:Name,Values=*$2*${vm}*${vmNo}*" --query 'Reservations[*].Instances[*].PrivateIpAddress' --output text)
+    
+    if [[ $vm == "frontend" ]]; then
+        pubIp=$(aws ec2 describe-instances --region $EC2REGION --filters "Name=tag:chain, Values=$1" "Name=tag:Name,Values=*$2*${vm}*" --query 'Reservations[*].Instances[*].PublicIpAddress' --output text)
+    else
+        pubIp=$(aws ec2 describe-instances --region $EC2REGION --filters "Name=tag:chain, Values=$1" "Name=tag:Name,Values=*$2*${basStr}*" --query 'Reservations[*].Instances[*].PublicIpAddress' --output text)
+    fi
+    priIp=$(aws ec2 describe-instances --region $EC2REGION --filters "Name=tag:chain, Values=$1" "Name=tag:Name,Values=*$2*${vm}*${vmNo}*" --query 'Reservations[*].Instances[*].PrivateIpAddress' --output text)
 
     echo ${pubIp} ${priIp}
 }
 
 
-### To get the IP of Frontend instance of specific chain/node ###
 function getFrontendIP {
     echo $(aws ec2 describe-instances --filters "Name=tag:chain, Values=$1" "Name=tag:Name,Values=*$2*frontend 0*" --query 'Reservations[*].Instances[*].PublicIpAddress' --output text)
 }
 
 
-### To get the IP of Bastion instance of specific chain/node ###
+
 function getBastionIP {
     if [[ $2 == "TC" ]]; then
         echo $(aws ec2 describe-instances --filters "Name=tag:chain, Values=$1" "Name=tag:Name,Values=*$2*Bastion*" --query 'Reservations[*].Instances[*].PublicIpAddress' --output text)
@@ -196,27 +209,33 @@ function getBastionIP {
 }
 
 
-### Automatically get Frontend IP and then execute portforwarding to specific chain/node ###
-function portforwarding {
-    if [[ ${#} -ge 2 ]]; then
-        ip1=$(getFrontendIP $1 $2)
-        echo "The frontend IP of Issuer is: ${ip1}"
-        newtab ssh -i ~/.ssh/key.pem -L XXXX:10.8.8.50:XXXX ubuntu@$ip1
-    fi
-    if [[ ${#} -ge 3 ]]; then
-        ip2=$(getFrontendIP $1 $3)
-        echo "The frontend IP of Acquirer is: ${ip2}"
-        newtab ssh -i ~/.ssh/key.pem -L XXXX:10.8.8.50:XXXX \
-                                     -L OOOO:10.8.8.50:OOOO ubuntu@$ip2
-    fi
-    if [[ ${#} -eq 4 ]]; then
-        ip3=$(getFrontendIP $1 $4)
-        tcBastion=$(getBastionIP $1 $4)
-        echo "The frontend IP of TC is: ${ip3}"
-        echo "The bastion IP of TC is: ${tcBastion}"
-        newtab ssh -i ~/.ssh/key.pem -L 4777:10.8.9.100:4777 ubuntu@$ip3
-        newtab ssh -L 9203:localhost:9200 -i ~/.ssh/id_rsa -i ~/.ssh/key.pem -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o "ProxyCommand=ssh -i ~/.ssh/id_rsa -i ~/.ssh/key.pem  -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ubuntu@$tcBastion -W %h:%p" ubuntu@10.8.14.20
-    fi
+function sshp() {
+    ### Auto get IPs of AWS vm, then ssh ###
+    #
+    echo -e "$fg[yellow]usage: ssh [-r REGION] qa211ac JKO ccp0$reset_color"
+    
+    EC2REGION="us-east-2"
+    while getopts "r:" arg; do
+        case ${arg} in
+            r)
+                EC2REGION="${OPTARG}"
+                ;;
+            ?)
+                EC2REGION="us-east-2"
+                ;;
+        esac
+    done
+    shift "$(($OPTIND -1))"
+
+    local pubIp
+    local priIp
+    read pubIp priIp < <(getAWSInstance -r $EC2REGION $1 $2 $3)
+    
+    echo "PublicIP:  ${pubIp}"
+    echo "PrivateIP: ${priIp}"
+
+    command ssh ubuntu@${priIp} -i "~/.ssh/key.pem" -o StrictHostKeyChecking=no -o "ProxyCommand ssh -i ~/.ssh/key.pem -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${pubIp} -W %h:%p"
 }
+
 
 
